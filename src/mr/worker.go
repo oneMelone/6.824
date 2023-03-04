@@ -97,6 +97,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		time.Sleep(time.Second)
 	}
 
+	fmt.Println("--map task is done, now do reduce--")
+
 	// 4. Get reduce number, and reduce task, read in all files, sort and reduce.
 	for {
 		// Get a reduce task, if ther is none, return
@@ -161,6 +163,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		ofile.Close()
 
 		// tell the cooridinator this reduce job is done
+		fmt.Printf("RJob %d is done\n", rIdx)
 		CallDoneReduceJob(rIdx)
 	}
 

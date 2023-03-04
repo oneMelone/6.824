@@ -119,6 +119,7 @@ func (c *Coordinator) MapReduceFence(args *MapReduceFenceArgs, reply *MapReduceF
 	defer c.mutex.Unlock()
 	if c.doneMapJobs == len(c.files) {
 		reply.MapDone = true
+		return nil
 	}
 	reply.MapDone = false
 	return nil
