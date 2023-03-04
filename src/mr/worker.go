@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -16,6 +17,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -37,9 +46,10 @@ func Worker(mapf func(string, string) []KeyValue,
 	outFiles := make([]*os.File, rNumber)
 	for i := 0; i < rNumber; i++ {
 		fileName := fmt.Sprintf("mr-%d-%d", myIdx, i)
-		outFile, err := os.Open(fileName)
+		outFile, err := os.Create(fileName)
 		outFiles[i] = outFile
 		if err != nil {
+			fmt.Println("err is ", err)
 			panic("open file err")
 		}
 	}
@@ -95,11 +105,63 @@ func Worker(mapf func(string, string) []KeyValue,
 			break
 		}
 
-		// Read in all files related to this reduce task, sort
+		// Read in all files related to this reduce task
+		interFiles := make([]*os.File, mNum)
+		for i := range interFiles {
+			fileName := fmt.Sprintf("mr-%d-%d", i, rIdx)
+			interFile, err := os.Open(fileName)
+			if err != nil {
+				fmt.Println("open interfile error:", err)
+				panic("open intermediate file error")
+			}
+			interFiles[i] = interFile
+		}
+		decoders := make([]*json.Decoder, mNum)
+		for i := range interFiles {
+			dec := json.NewDecoder(interFiles[i])
+			decoders[i] = dec
+		}
 
-		// Do reduce function
+		// Read all intermediate result to mem and sort
+		intermediate := []KeyValue{}
+		for _, dec := range decoders {
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				intermediate = append(intermediate, kv)
+			}
+		}
+		sort.Sort(ByKey(intermediate))
 
-		// write to file
+		// do reduce and write to file
+		oname := fmt.Sprintf("mr-out-%d", rIdx)
+		ofile, err := os.Create(oname)
+		if err != nil {
+			fmt.Println("create ofile err:", err)
+			panic("create ofile err!")
+		}
+
+		i := 0
+		for i < len(intermediate) {
+			j := i + 1
+			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, intermediate[k].Value)
+			}
+			output := reducef(intermediate[i].Key, values)
+			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+			i = j
+		}
+		ofile.Close()
+
+		// tell the cooridinator this reduce job is done
+		CallDoneReduceJob(rIdx)
 	}
 
 }
@@ -166,6 +228,14 @@ func CallDoneMapJob(idx int) {
 	panic("Call DoneMapJob error!")
 }
 
+func CallDoneReduceJob(idx int) {
+	ok := call("Coordinator.DoneReduceTask", &DoneReduceTaskArgs{Index: idx}, &DoneReduceTaskReply{})
+	if ok {
+		return
+	}
+	panic("Call DoneReduceJob error")
+}
+
 func CallMapReduceFence() bool {
 	reply := MapReduceFenceReply{}
 	ok := call("Coordinator.MapReduceFence", &MapReduceFenceArgs{}, &reply)
@@ -179,7 +249,7 @@ func CallGetReduceTask() (int, bool, int) {
 	reply := GetReduceTaskReply{}
 	ok := call("Coordinator.GetReduceTask", &GetReduceTaskArgs{}, &reply)
 	if ok {
-		return reply.Index, reply.HasJob, reply.MapNum
+		return reply.Index, reply.HasJob, reply.MapWorkerNum
 	}
 	panic("Call GetReduceTask error!")
 }

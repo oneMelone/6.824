@@ -37,9 +37,16 @@ type GetReduceTaskArgs struct {
 }
 
 type GetReduceTaskReply struct {
-	Index  int  // idx for the reduce task
-	HasJob bool // if still has a reduce job
-	MapNum int  // map tasks total number
+	Index        int  // idx for the reduce task
+	HasJob       bool // if still has a reduce job
+	MapWorkerNum int  // map worker total number
+}
+
+type DoneReduceTaskArgs struct {
+	Index int
+}
+
+type DoneReduceTaskReply struct {
 }
 
 type GetRNumberArgs struct {

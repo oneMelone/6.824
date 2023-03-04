@@ -64,7 +64,7 @@ func (c *Coordinator) GetReduceTask(args *GetReduceTaskArgs, reply *GetReduceTas
 		if s == Waiting {
 			reply.Index = i
 			reply.HasJob = true
-			reply.MapNum = len(c.files)
+			reply.MapWorkerNum = c.workerNum
 			c.rstatus[i] = Doing
 			return nil
 		}
@@ -101,6 +101,19 @@ func (c *Coordinator) DoneMapJob(args *DoneMapJobArgs, reply *DoneMapJobReply) e
 	return nil
 }
 
+func (c *Coordinator) DoneReduceTask(args *DoneReduceTaskArgs, reply *DoneReduceTaskReply) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if args.Index < 0 || args.Index >= len(c.rstatus) {
+		return errors.New("wrong rindex")
+	}
+	if c.rstatus[args.Index] == Doing {
+		c.doneReduceJobs += 1
+	}
+	c.rstatus[args.Index] = Done
+	return nil
+}
+
 func (c *Coordinator) MapReduceFence(args *MapReduceFenceArgs, reply *MapReduceFenceReply) error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -130,7 +143,12 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := false
 
-	// Your code here.
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.doneReduceJobs == c.rNumber {
+		ret = true
+	}
 
 	return ret
 }
@@ -141,7 +159,20 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
-	// Your code here.
+	c.mutex = sync.Mutex{}
+	c.files = files
+	c.mstatus = make([]TaskStatus, len(files))
+	for i := range c.mstatus {
+		c.mstatus[i] = Waiting
+	}
+	c.doneMapJobs = 0
+	c.rNumber = nReduce
+	c.rstatus = make([]TaskStatus, nReduce)
+	for i := range c.rstatus {
+		c.rstatus[i] = Waiting
+	}
+	c.doneReduceJobs = 0
+	c.workerNum = 0
 
 	c.server()
 	return &c
