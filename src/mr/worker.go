@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -31,15 +32,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	myIdx := CallRegister()
 	rNumber := CallGetRNumber()
 	if rNumber <= 0 {
-		panic("illegal rNumber %v", rNumber)
+		panic("illegal rNumber")
 	}
 	outFiles := make([]*os.File, rNumber)
 	for i := 0; i < rNumber; i++ {
 		fileName := fmt.Sprintf("mr-%d-%d", myIdx, i)
-		outFiles[i], err = os.Open(fileName)
+		outFile, err := os.Open(fileName)
+		outFiles[i] = outFile
 		if err != nil {
-			panic("open file err: %v", err)
+			panic("open file err")
 		}
+	}
+	outEncoders := make([]*json.Encoder, rNumber)
+	for i := 0; i < rNumber; i++ {
+		outEncoders[i] = json.NewEncoder(outFiles[i])
 	}
 
 	// 2. Get map tasks from Coordinator until there is none
@@ -53,26 +59,49 @@ func Worker(mapf func(string, string) []KeyValue,
 		// do map job
 		inputFile, err := os.Open(filename)
 		if err != nil {
-			panic("cannot open %v", filename)
+			panic("cannot open file")
 		}
-		content, err := ioutil.ReadAll(file)
+		content, err := ioutil.ReadAll(inputFile)
 		if err != nil {
-			panic("cannot read %v", filename)
+			panic("cannot read file")
 		}
-		file.Close()
+		inputFile.Close()
 		kva := mapf(filename, string(content))
 
 		// write intermediate file
 		for _, kv := range kva {
-			targetReduce := ihash(kva.Key) % rNumber
-			targetOut := outFiles[targetReduce]
-			enc := json.NewEncoder(file)
+			targetReduce := ihash(kv.Key) % rNumber
+			targetEncoder := outEncoders[targetReduce]
+			err := targetEncoder.Encode(&kv)
+			if err != nil {
+				panic("encode err")
+			}
 		}
+
+		// tell coordinator current map job is done
+		CallDoneMapJob(idx)
 	}
 
-	// TODO: when to sort?
+	// 3. Wait for all map job to be done
+	for !CallMapReduceFence() {
+		time.Sleep(time.Second)
+	}
 
-	// 3. Get reduce tasks from Coordinator until there is none
+	// 4. Get reduce number, and reduce task, read in all files, sort and reduce.
+	for {
+		// Get a reduce task, if ther is none, return
+		rIdx, hasRJob, mNum := CallGetReduceTask()
+		if !hasRJob {
+			break
+		}
+
+		// Read in all files related to this reduce task, sort
+
+		// Do reduce function
+
+		// write to file
+	}
+
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -127,6 +156,32 @@ func CallRegister() int {
 		return reply.WorkerIdx
 	}
 	panic("Register err!")
+}
+
+func CallDoneMapJob(idx int) {
+	ok := call("Coordinator.DoneMapJob", &DoneMapJobArgs{Index: idx}, &DoneMapJobReply{})
+	if ok {
+		return
+	}
+	panic("Call DoneMapJob error!")
+}
+
+func CallMapReduceFence() bool {
+	reply := MapReduceFenceReply{}
+	ok := call("Coordinator.MapReduceFence", &MapReduceFenceArgs{}, &reply)
+	if ok {
+		return reply.MapDone
+	}
+	panic("Call MapReduceFence error!")
+}
+
+func CallGetReduceTask() (int, bool, int) {
+	reply := GetReduceTaskReply{}
+	ok := call("Coordinator.GetReduceTask", &GetReduceTaskArgs{}, &reply)
+	if ok {
+		return reply.Index, reply.HasJob, reply.MapNum
+	}
+	panic("Call GetReduceTask error!")
 }
 
 // send an RPC request to the coordinator, wait for the response.

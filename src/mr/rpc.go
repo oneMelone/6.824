@@ -29,7 +29,45 @@ type GetMapTaskArgs struct {
 }
 
 type GetMapTaskReply struct {
-	File string // if empty, then no more work to do
+	File  string // if empty, then no more work to do
+	Index int    // idx for the map task
+}
+
+type GetReduceTaskArgs struct {
+}
+
+type GetReduceTaskReply struct {
+	Index  int  // idx for the reduce task
+	HasJob bool // if still has a reduce job
+	MapNum int  // map tasks total number
+}
+
+type GetRNumberArgs struct {
+}
+
+type GetRNumberReply struct {
+	RNumber int // RNumber defined by user
+}
+
+type RegisterArgs struct {
+}
+
+type RegisterReply struct {
+	WorkerIdx int
+}
+
+type DoneMapJobArgs struct {
+	Index int
+}
+
+type DoneMapJobReply struct {
+}
+
+type MapReduceFenceArgs struct {
+}
+
+type MapReduceFenceReply struct {
+	MapDone bool
 }
 
 // Cook up a unique-ish UNIX-domain socket name

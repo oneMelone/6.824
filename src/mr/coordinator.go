@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -9,20 +10,23 @@ import (
 	"sync"
 )
 
-type MapTaskStatus int
+type TaskStatus int
 
 const (
-	Waiting MapTaskStatus = 1
-	Doing   MapTaskStatus = 2
-	Done    MapTaskStatus = 3
+	Waiting TaskStatus = 1
+	Doing   TaskStatus = 2
+	Done    TaskStatus = 3
 )
 
 type Coordinator struct {
-	mutex     sync.Mutex      // mutex for shared data
-	files     []string        // map tasks, each file is a map task
-	status    []MapTaskStatus // for each file, there is a status
-	rNumber   int             // reduce task numbers
-	workerNum int             // total number of current workers
+	mutex          sync.Mutex   // mutex for shared data
+	files          []string     // map tasks, each file is a map task
+	mstatus        []TaskStatus // for each file, there is a status
+	doneMapJobs    int          // how many map jobs are done now
+	rNumber        int          // reduce task numbers
+	rstatus        []TaskStatus // reduce task status
+	doneReduceJobs int          // how many reduce jobs are done
+	workerNum      int          // total number of current workers
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -40,10 +44,28 @@ func (c *Coordinator) GetMapTask(args *GetMapTaskArgs, reply *GetMapTaskReply) e
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	for i, s := range c.status {
+	for i, s := range c.mstatus {
 		if s == Waiting {
 			reply.File = c.files[i]
 			reply.Index = i
+			c.mstatus[i] = Doing
+			return nil
+		}
+	}
+	return nil
+}
+
+// get a reduce work by this function
+func (c *Coordinator) GetReduceTask(args *GetReduceTaskArgs, reply *GetReduceTaskReply) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	for i, s := range c.rstatus {
+		if s == Waiting {
+			reply.Index = i
+			reply.HasJob = true
+			reply.MapNum = len(c.files)
+			c.rstatus[i] = Doing
 			return nil
 		}
 	}
@@ -63,6 +85,29 @@ func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
 	idx := c.workerNum
 	c.workerNum += 1
 	reply.WorkerIdx = idx
+	return nil
+}
+
+func (c *Coordinator) DoneMapJob(args *DoneMapJobArgs, reply *DoneMapJobReply) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if args.Index < 0 || args.Index >= len(c.mstatus) {
+		return errors.New("wrong index")
+	}
+	if c.mstatus[args.Index] == Doing {
+		c.doneMapJobs += 1
+	}
+	c.mstatus[args.Index] = Done
+	return nil
+}
+
+func (c *Coordinator) MapReduceFence(args *MapReduceFenceArgs, reply *MapReduceFenceReply) error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	if c.doneMapJobs == len(c.files) {
+		reply.MapDone = true
+	}
+	reply.MapDone = false
 	return nil
 }
 
