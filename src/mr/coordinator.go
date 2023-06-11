@@ -2,12 +2,14 @@ package mr
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type TaskStatus int
@@ -18,15 +20,22 @@ const (
 	Done    TaskStatus = 3
 )
 
+const (
+	maxMapTime    = 15
+	maxReduceTime = 15
+)
+
 type Coordinator struct {
-	mutex          sync.Mutex   // mutex for shared data
-	files          []string     // map tasks, each file is a map task
-	mstatus        []TaskStatus // for each file, there is a status
-	doneMapJobs    int          // how many map jobs are done now
-	rNumber        int          // reduce task numbers
-	rstatus        []TaskStatus // reduce task status
-	doneReduceJobs int          // how many reduce jobs are done
-	workerNum      int          // total number of current workers
+	mutex            sync.Mutex   // mutex for shared data
+	files            []string     // map tasks, each file is a map task
+	mstatus          []TaskStatus // for each file, there is a status
+	doneMapJobs      int          // how many map jobs are done now
+	rNumber          int          // reduce task numbers
+	rstatus          []TaskStatus // reduce task status
+	doneReduceJobs   int          // how many reduce jobs are done
+	workerNum        int          // total number of current workers
+	remainMapTime    []int        // remain map time for the map task to be done
+	remainReduceTime []int        // remain reduce time for the reduce task to be done
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -49,6 +58,7 @@ func (c *Coordinator) GetMapTask(args *GetMapTaskArgs, reply *GetMapTaskReply) e
 			reply.File = c.files[i]
 			reply.Index = i
 			c.mstatus[i] = Doing
+			c.remainMapTime[i] = maxMapTime
 			return nil
 		}
 	}
@@ -66,6 +76,7 @@ func (c *Coordinator) GetReduceTask(args *GetReduceTaskArgs, reply *GetReduceTas
 			reply.HasJob = true
 			reply.MapWorkerNum = c.workerNum
 			c.rstatus[i] = Doing
+			c.remainReduceTime[i] = maxReduceTime
 			return nil
 		}
 	}
@@ -125,6 +136,14 @@ func (c *Coordinator) MapReduceFence(args *MapReduceFenceArgs, reply *MapReduceF
 	return nil
 }
 
+func (c *Coordinator) ExitFence(args *ExitFenceArgs, reply *ExitFenceReply) error {
+	if c.Done() {
+		reply.Done = true
+	}
+
+	return nil
+}
+
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
 	rpc.Register(c)
@@ -137,6 +156,34 @@ func (c *Coordinator) server() {
 		log.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
+
+	// periodically check task status
+	go func() {
+		for {
+			c.mutex.Lock()
+			for i := range c.mstatus {
+				if c.mstatus[i] == Doing {
+					c.remainMapTime[i] -= 3
+					fmt.Printf("map job %d remain %d\n", i, c.remainMapTime[i])
+					if c.remainMapTime[i] == 0 {
+						fmt.Printf("map job %d need rearrangement\n", i)
+						c.mstatus[i] = Waiting
+					}
+				}
+			}
+			for i := range c.rstatus {
+				if c.rstatus[i] == Doing {
+					c.remainReduceTime[i] -= 3
+					if c.remainReduceTime[i] == 0 {
+						c.rstatus[i] = Waiting
+					}
+				}
+			}
+			c.mutex.Unlock()
+
+			time.Sleep(3 * time.Second)
+		}
+	}()
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
@@ -174,6 +221,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 	c.doneReduceJobs = 0
 	c.workerNum = 0
+	c.remainMapTime = make([]int, len(files))
+	c.remainReduceTime = make([]int, nReduce)
 
 	c.server()
 	return &c

@@ -39,13 +39,19 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	// 1. Register, get rNumber, and open output files
 	myIdx := CallRegister()
+	go func() {
+		for {
+			fmt.Printf("%d worker is alive\n", myIdx)
+			time.Sleep(3 * time.Second)
+		}
+	}()
 	rNumber := CallGetRNumber()
 	if rNumber <= 0 {
 		panic("illegal rNumber")
 	}
 	outFiles := make([]*os.File, rNumber)
 	for i := 0; i < rNumber; i++ {
-		fileName := fmt.Sprintf("mr-%d-%d", myIdx, i)
+		fileName := fmt.Sprintf("mr-%d-%d-tmp", myIdx, i)
 		outFile, err := os.Create(fileName)
 		outFiles[i] = outFile
 		if err != nil {
@@ -59,10 +65,18 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	// 2. Get map tasks from Coordinator until there is none
+mapwork:
 	for {
 		idx, filename := CallGetMapTask()
 		if filename == "" {
-			// no more map work to do
+			// if CallMapReduceFence() {
+			// 	// map work is done
+			// 	break
+			// } else {
+			// 	// some work need rearrangement
+			// 	time.Sleep(3 * time.Second)
+			// 	continue
+			// }
 			break
 		}
 
@@ -93,13 +107,26 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	// 3. Wait for all map job to be done
-	for !CallMapReduceFence() {
-		time.Sleep(time.Second)
+	if !CallMapReduceFence() {
+		goto mapwork
 	}
 
-	fmt.Println("--map task is done, now do reduce--")
+	// rename tmp files
+	for i := 0; i < rNumber; i++ {
+		oldFileName := fmt.Sprintf("mr-%d-%d-tmp", myIdx, i)
+		newFileName := fmt.Sprintf("mr-%d-%d", myIdx, i)
+		err := os.Rename(oldFileName, newFileName)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+
+	time.Sleep(2 * time.Second) // wait renaming
+
+	fmt.Println("reach reduce task")
 
 	// 4. Get reduce number, and reduce task, read in all files, sort and reduce.
+reduce_job:
 	for {
 		// Get a reduce task, if ther is none, return
 		rIdx, hasRJob, mNum := CallGetReduceTask()
@@ -108,17 +135,16 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 
 		// Read in all files related to this reduce task
-		interFiles := make([]*os.File, mNum)
-		for i := range interFiles {
+		interFiles := make([]*os.File, 0)
+		for i := 0; i < mNum; i++ {
 			fileName := fmt.Sprintf("mr-%d-%d", i, rIdx)
 			interFile, err := os.Open(fileName)
 			if err != nil {
-				fmt.Println("open interfile error:", err)
-				panic("open intermediate file error")
+				continue
 			}
-			interFiles[i] = interFile
+			interFiles = append(interFiles, interFile)
 		}
-		decoders := make([]*json.Decoder, mNum)
+		decoders := make([]*json.Decoder, len(interFiles))
 		for i := range interFiles {
 			dec := json.NewDecoder(interFiles[i])
 			decoders[i] = dec
@@ -163,10 +189,14 @@ func Worker(mapf func(string, string) []KeyValue,
 		ofile.Close()
 
 		// tell the cooridinator this reduce job is done
-		fmt.Printf("RJob %d is done\n", rIdx)
 		CallDoneReduceJob(rIdx)
 	}
 
+	// wait for all jobs to be done
+	if !CallExitFence() {
+		time.Sleep(time.Second)
+		goto reduce_job
+	}
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -224,6 +254,7 @@ func CallRegister() int {
 }
 
 func CallDoneMapJob(idx int) {
+	fmt.Printf("%d map is done\n", idx)
 	ok := call("Coordinator.DoneMapJob", &DoneMapJobArgs{Index: idx}, &DoneMapJobReply{})
 	if ok {
 		return
@@ -255,6 +286,15 @@ func CallGetReduceTask() (int, bool, int) {
 		return reply.Index, reply.HasJob, reply.MapWorkerNum
 	}
 	panic("Call GetReduceTask error!")
+}
+
+func CallExitFence() bool {
+	reply := ExitFenceReply{}
+	ok := call("Coordinator.ExitFence", &ExitFenceArgs{}, &reply)
+	if ok {
+		return reply.Done
+	}
+	panic("Call ExitFence error!")
 }
 
 // send an RPC request to the coordinator, wait for the response.
